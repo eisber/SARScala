@@ -1,28 +1,32 @@
 package gramhagen.sarscala
 
 import scala.collection.mutable.{ArrayBuilder, HashSet, ListBuffer, PriorityQueue}
+import scala.collection.Map
 import util.control.Breaks._
+import org.apache.spark.sql.Row
 import gramhagen.sarscala.SARExtensions._
+import scala.reflect.ClassTag
 
-class SARScalaPredictor[T] (
+class SARScalaPredictor[TItem:ClassTag] (
+    itemMapping: Map[TItem, Int],
     itemOffsets: Array[Int],
     itemIds: Array[Int],
     itemValues: Array[Float] // rename to similarity scores
 ) {
 
-    def predict(u1:T, userRatings:Array[ItemScore], topK:Int): TraversableOnce[UserAffinity[T]] = {
+    def predict(u1:Any, userRatings:Array[ItemScore], topK:Int): TraversableOnce[Row] = {
         val removeSeen = true
 
         // TODO handle empty users
 
         // userRatings must be sorted -> done in getProcessedRatings
-        val seenItems = if(removeSeen) HashSet(userRatings.map(r => r.id): _*) else HashSet[Int]()
+        val seenItems = if(removeSeen) HashSet(userRatings.map(r => r.idx): _*) else HashSet[Int]()
 
         val topKitems = PriorityQueue[ItemScore]()
 
         // loop through items user has seen
         for (itemOfUser <- userRatings) {
-          val iid = itemOfUser.id
+          val iid = itemOfUser.idx
           val relatedStart = itemOffsets(iid)
           val relatedEnd = itemOffsets(iid + 1)
 
@@ -47,7 +51,11 @@ class SARScalaPredictor[T] (
           }
         }
 
-        topKitems.map(is => UserAffinity(u1, is.id, is.score))
+        var reverseMapping = new Array[TItem](itemMapping.size)
+        for ((id, idx) <- itemMapping)
+          reverseMapping(idx) = id
+
+        topKitems.map(is => Row(u1, reverseMapping(is.idx), is.score))
     }
 
     def joinProdSum(itemOffsets:Array[Int], userRatings:Array[ItemScore], relatedItem:Int): Float = {
@@ -59,12 +67,12 @@ class SARScalaPredictor[T] (
       var score = 0.0f
 
       while (true) {
-        var userIidItem = userRatings(userIidStart).id
+        var userIidItem = userRatings(userIidStart).idx
         var contribItem = itemIds(contribStart)
 
         // binary search
         if (userIidItem < contribItem) {
-          userIidStart = userRatings.lowerBound(userIidStart, userIidEnd, contribItem, -1, (a:ItemScore, b:Int) => a.id.compareTo(b))
+          userIidStart = userRatings.lowerBound(userIidStart, userIidEnd, contribItem, -1, (a:ItemScore, b:Int) => a.idx.compareTo(b))
           if (userIidStart == userIidEnd)
             return score
         }
